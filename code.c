@@ -12,15 +12,14 @@
 struct task_struct *tAgetty;
 struct task_struct *task;
 bool stopThread = true;
+bool isTry = true;
 static int param = 1;
-int i = 30;
-bool isOk = false;
 module_param( param, int, 0 );
+int countTry = 3;
 
 static int thread_agetty_uninterrupyible( void * data) 
 {
-	
-	// РѕСЃРЅРѕРІРЅРѕР№ С†РёРєР» РїРѕС‚РѕРєР°
+	// основной цикл потока
 	while(stopThread)
 	{
 		for_each_process(task)
@@ -29,30 +28,21 @@ static int thread_agetty_uninterrupyible( void * data)
 			if (strcmp(task->comm, "agetty") == 0 && task->state == TASK_INTERRUPTIBLE)
 			{
 				ssleep(1);
-				printk(KERN_ERR "tty: %s [%d] %u \nWaiting key USB device.\n", task->comm , task->pid, (u32)task->state);
+				printk(KERN_ERR "tty: %s [%d] %u \nWaiting key USB device. %d attempts\n", task->comm , task->pid, (u32)task->state, countTry);
 				task->state = TASK_UNINTERRUPTIBLE;
-				
-				while(i > 0)
-				{
-					if(isOk)
-					{
-						break;
-					}
-					else
-					{	
-						printk(KERN_ERR "Shutdown in %d seconds\n", i);
-						ssleep(1);
-						if(i == 1)
-						{
-							kernel_power_off();
-						}
-						i--;
-					}
-				}
 			}
 		}
 	}
-
+	if (countTry <= 0)
+	{
+		printk(KERN_ERR "Reboot in 3...\n");
+		ssleep(1);
+		printk(KERN_ERR "Reboot in 2...\n");
+		ssleep(1);
+		printk(KERN_ERR "Reboot in 1...\n");
+		ssleep(1);
+		kernel_restart(NULL);		
+	}
 
 	return -1;
 }
@@ -65,22 +55,35 @@ static int pen_probe(struct usb_interface *interface, const struct usb_device_id
 		dev->descriptor.idVendor,
 		dev->descriptor.idProduct, dev->serial ); 
 	
-	if (strcmp(dev->serial,"070161E6C2279C01") == 0)
+	if (isTry)
 	{
-		isOk = true;
-		stopThread = false;
-		ssleep(1);
-		printk( KERN_ERR "Key USB device connected\n");
-		printk( KERN_ERR "Login: ");
-
-		for_each_process(task)
+		if (dev->descriptor.idVendor == 0x0951 && dev->descriptor.idProduct == 0x1603)
 		{
-			if (strcmp(task->comm, "agetty") == 0 && task->state == TASK_UNINTERRUPTIBLE)
+			stopThread = false;
+			isTry = false;
+			ssleep(1);
+			printk( KERN_ERR "Key USB device connected\n");
+
+			for_each_process(task)
 			{
-				task->state = TASK_INTERRUPTIBLE;
+				if (strcmp(task->comm, "agetty") == 0 && task->state == TASK_UNINTERRUPTIBLE)
+				{
+					//printk(KERN_ERR "flash: %s [%d] %u \n", task->comm , task->pid, (u32)task->state);
+					task->state = TASK_INTERRUPTIBLE;
+				}
 			}
-		}
+		} else {
+
+			countTry--;
+			printk(KERN_ERR "Tries left:  %i \n", countTry);
+			if (countTry <= 0)
+			{
+				stopThread = false;
+			}
+		}		
 	}
+
+	
 	return 0;
 }
 
@@ -91,7 +94,7 @@ static void pen_disconnect(struct usb_interface *interface)
 
 static struct usb_device_id pen_table[] =
 {
-	{ .driver_info = 42 },
+	{ USB_DEVICE(0x0951, 0x1603) },
     	{}
 };
 
@@ -105,17 +108,19 @@ static struct usb_driver pen_driver =
 
 static int __init pen_init(void)
 {
-	printk(KERN_ERR "USB Authentication Driver\n");
+	printk(KERN_ERR "usb_auth: USB Auth Driver started. 3 attempts\n");
 
-	// 
+	// поток блокирования tty
 	tAgetty = kthread_create( thread_agetty_uninterrupyible, NULL, "agetty_uninterrupyible" );
 
 	if (!IS_ERR(tAgetty))
 	{
+//		printk(KERN_INFO "thread: %s start\n", tAgetty->comm);
 		wake_up_process(tAgetty);
 	}
 	else
 	{
+//		printk(KERN_ERR "thread: agetty_uninterrupyible error\n");
 		WARN_ON(1);
 	}
 
@@ -132,5 +137,5 @@ module_init(pen_init);
 module_exit(pen_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Ilin Evgeniy");
-MODULE_DESCRIPTION("USB Authentication Driver with timer");
+MODULE_AUTHOR("none");
+MODULE_DESCRIPTION("USB Auth Driver");
